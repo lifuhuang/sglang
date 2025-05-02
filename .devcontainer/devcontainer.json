@@ -20,5 +20,7 @@
     "runArgs": [
         "--gpus",
         "all"
-    ]
+    ],
+    "workspaceMount": "source=${localWorkspaceFolder},target=/sgl-workspace/sglang,type=bind",
+    "workspaceFolder": "/sgl-workspace/sglang"
 }
