@@ -76,8 +76,8 @@ class Conversation:
     # Stop criteria (the default one is EOS token)
     stop_str: Union[str, List[str]] = None
     # The string that represents an image token in the prompt
-    image_token: Union[str, Template] = "<image>"
-    audio_token: Union[str, Template] = "<audio>"
+    image_token: str  = "<image>"
+    audio_token: str = "<audio>"
 
     image_data: Optional[List[str]] = None
     modalities: Optional[List[str]] = None
@@ -577,7 +577,7 @@ def generate_chat_conv(
                 if add_token_as_needed:
                     image_token = ""
 
-                image_url_index = 1
+                image_count = 0
                 audio_token = conv.audio_token
                 for content in message.content:
                     if content.type == "text":
@@ -589,8 +589,8 @@ def generate_chat_conv(
                         if conv.name == "internvl-2-5":
                             real_content = image_token + real_content
                         elif conv.name == "phi-4-mm":
-                            real_content += image_token.substitute(index=image_url_index)
-                            image_url_index += 1
+                            image_count += 1
+                            real_content += image_token.format(index=image_count)
                         else:
                             real_content += image_token
                         conv.append_image(content.image_url.url)
@@ -676,8 +676,8 @@ register_conv_template(
         sep_style=SeparatorStyle.NO_COLON_SINGLE,
         sep="<|end|>",
         stop_str="<|end|>",
-        image_token=Template("<|image_${index}|>"),
-        audio_token=Template("<|audio_${index}|>"),
+        image_token="<|image_{index}|>",
+        audio_token="<|audio_{index}|>",
     ))
 
 register_conv_template(
