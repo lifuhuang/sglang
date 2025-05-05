@@ -20,5 +20,10 @@
     "runArgs": [
         "--gpus",
         "all"
-    ]
+    ],
+    "mounts": [
+        "type=bind,source=/home/azureuser/.cache/huggingface/,target=/root/.cache/huggingface"
+    ],
+    "workspaceMount": "source=${localWorkspaceFolder},target=/sgl-workspace/sglang,type=bind",
+    "workspaceFolder": "/sgl-workspace/sglang"
 }

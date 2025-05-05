@@ -17,6 +17,7 @@
 # https://github.com/lm-sys/FastChat/blob/main/fastchat/conversation.py
 import dataclasses
 from enum import IntEnum, auto
+from string import Template
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from sglang.srt.openai_api.protocol import ChatCompletionRequest
@@ -74,8 +75,8 @@ class Conversation:
     # Stop criteria (the default one is EOS token)
     stop_str: Union[str, List[str]] = None
     # The string that represents an image token in the prompt
-    image_token: str = "<image>"
-    audio_token: str = "<audio>"
+    image_token: Union[str, Template] = "<image>"
+    audio_token: Union[str, Template] = "<audio>"
 
     image_data: Optional[List[str]] = None
     modalities: Optional[List[str]] = None
@@ -514,6 +515,7 @@ def _get_full_multimodal_text_prompt(
 def generate_chat_conv(
     request: ChatCompletionRequest, template_name: str
 ) -> Conversation:
+    # TODO: why copied twice?
     conv = chat_templates[template_name].copy()
     conv = Conversation(
         name=conv.name,
@@ -574,6 +576,7 @@ def generate_chat_conv(
                 if add_token_as_needed:
                     image_token = ""
 
+                image_url_index = 1
                 audio_token = conv.audio_token
                 for content in message.content:
                     if content.type == "text":
@@ -584,6 +587,9 @@ def generate_chat_conv(
                         # NOTE: works for llava and intervl2_5
                         if conv.name == "internvl-2-5":
                             real_content = image_token + real_content
+                        elif conv.name == "phi-4-mm":
+                            real_content += image_token.substitute(index=image_url_index)
+                            image_url_index += 1
                         else:
                             real_content += image_token
                         conv.append_image(content.image_url.url)
@@ -645,6 +651,19 @@ register_conv_template(
         image_token="<|image|>",
     )
 )
+
+register_conv_template(
+    Conversation(
+        name="phi-4-mm",
+        system_message="You are a helpful language and vision assistant. You are able to understand the visual content that the user provides, and assist the user with a variety of tasks using natural language.",
+        system_template="<|system|>{system_message}<|end|>",
+        roles=("<|user|>", "<|assistant|>"),
+        sep_style=SeparatorStyle.NO_COLON_SINGLE,
+        sep="<|end|>",
+        stop_str="<|end|>",
+        image_token=Template("<|image_${index}|>"),
+        audio_token=Template("<|audio_${index}|>"),
+    ))
 
 register_conv_template(
     Conversation(
@@ -940,3 +959,10 @@ def match_moonshot_kimivl(model_path: str):
     model_path = model_path.lower()
     if "kimi" in model_path and "vl" in model_path:
         return "kimi-vl"
+
+@register_conv_template_matching_function
+def match_phi_4_mm(model_path: str):
+    if (
+        "phi-4-multimodal" in model_path.lower()
+    ):
+        return "phi-4-mm"

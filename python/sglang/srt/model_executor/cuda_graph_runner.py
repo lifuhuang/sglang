@@ -358,31 +358,38 @@ class CudaGraphRunner:
                 else reversed(self.capture_bs)
             )
             for bs in capture_range:
-                if get_tensor_model_parallel_rank() == 0:
-                    avail_mem = get_available_gpu_memory(
-                        self.model_runner.device,
-                        self.model_runner.gpu_id,
-                        empty_cache=False,
-                    )
-                    capture_range.set_description(
-                        f"Capturing batches ({avail_mem=:.2f} GB)"
-                    )
+                try:
+                    if get_tensor_model_parallel_rank() == 0:
+                        avail_mem = get_available_gpu_memory(
+                            self.model_runner.device,
+                            self.model_runner.gpu_id,
+                            empty_cache=False,
+                        )
+                        capture_range.set_description(
+                            f"Capturing batches ({avail_mem=:.2f} GB)"
+                        )
 
-                with patch_model(
-                    self.model_runner.model,
-                    bs in self.compile_bs,
-                    num_tokens=bs * self.num_tokens_per_bs,
-                    tp_group=self.model_runner.tp_group,
-                ) as forward:
-                    (
-                        graph,
-                        output_buffers,
-                    ) = self.capture_one_batch_size(bs, forward)
-                    self.graphs[bs] = graph
-                    self.output_buffers[bs] = output_buffers
+                    with patch_model(
+                        self.model_runner.model,
+                        bs in self.compile_bs,
+                        num_tokens=bs * self.num_tokens_per_bs,
+                        tp_group=self.model_runner.tp_group,
+                    ) as forward:
+                        mem_before = torch.cuda.memory_allocated()
+                        (
+                            graph,
+                            output_buffers,
+                        ) = self.capture_one_batch_size(bs, forward)
+                        mem_after = torch.cuda.memory_allocated()
+                        mem_diff = mem_after - mem_before
+                        print(f"!!!!!!!!! batch size = {bs} mem_diff = {mem_diff / 1024 / 1024}")
+                        self.graphs[bs] = graph
+                        self.output_buffers[bs] = output_buffers
 
-                # Save gemlite cache after each capture
-                save_gemlite_cache()
+                    # Save gemlite cache after each capture
+                    save_gemlite_cache()
+                except Exception as e:
+                    raise e
 
     def capture_one_batch_size(self, bs: int, forward: Callable):
         graph = torch.cuda.CUDAGraph()
