@@ -297,7 +297,7 @@ class BaseMultimodalProcessor(ABC):
                 elif task_type == Modality.AUDIO:
                     # audio
                     audios.append(result)
-                    new_text += multimodal_tokens.audio_token
+                    new_text += text_part
                 # TODO: handle video
             else:
                 new_text += text_part

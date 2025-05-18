@@ -13,7 +13,7 @@ from sglang.srt.layers.quantization import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
     general_mm_embed_routine,
-    embed_mm_inputs
+    embed_mm_inputs,
 )
 from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputs
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -33,16 +33,17 @@ _AUDIO_MAX_SOUNDFILE_SIZE = 241_000
 
 SIGLIP_NAME = "siglip-so400m-patch14-448"
 VISION_ENCODER_TO_PROCESSING_CONFIG = {
-    'siglip-so400m-patch14-448': {
-        'vit_image_size': 448,
-        'vit_patch_size': 14,
-        'token_compression_factor': 2,
+    "siglip-so400m-patch14-448": {
+        "vit_image_size": 448,
+        "vit_patch_size": 14,
+        "token_compression_factor": 2,
     },
 }
 
 
-def _get_padding_size(orig_width: int, orig_height: int, target_height: int,
-                      target_width: int):
+def _get_padding_size(
+    orig_width: int, orig_height: int, target_height: int, target_width: int
+):
     ratio_width = target_width / orig_width
     ratio_height = target_height / orig_height
 
@@ -55,7 +56,6 @@ def _get_padding_size(orig_width: int, orig_height: int, target_height: int,
     return padding_height, padding_width
 
 
- 
 def get_navit_vision_model():
     vision_config = {
         "hidden_size": 1152,
@@ -63,13 +63,13 @@ def get_navit_vision_model():
         "intermediate_size": 4304,
         "model_type": "siglip_vision_model",
         "num_attention_heads": 16,
-        "num_hidden_layers": 27,
+        "num_hidden_layers": 26, # Model is originally 27-layer, we only need the first 26 layers for feature extraction.
         "patch_size": 14,
     }
     model_config = SiglipVisionConfig(**vision_config)
 
-    # TODO: Idefics2VisionTransformer is introduced in minicpmv, we should extract it to a shared location. 
-    vision_model = Idefics2VisionTransformer(config=model_config)
+    # TODO (lifuhuang): Idefics2VisionTransformer is introduced in minicpmv, we should extract it to a shared location.
+    vision_model = Idefics2VisionTransformer(config=model_config, require_post_norm=False)
 
     return vision_model
 
@@ -79,7 +79,7 @@ class Phi4MMImageEncoder(nn.Module):
 
     def __init__(
         self,
-        config: Phi4MultimodalConfig,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig],
         prefix: str = "",
         model_dir: str = "",
@@ -88,8 +88,7 @@ class Phi4MMImageEncoder(nn.Module):
 
         # n_embed or hidden_size
         hidden_size = config.n_embd if hasattr(config, "n_embd") else config.hidden_size
-
-        assert config.img_processor is None, "Do not support custom configuration for image processor, if you run into this error, please file a Github issue."
+        self.type_feature = 'patch'
 
         self.img_processor = get_navit_vision_model()
 
@@ -160,36 +159,33 @@ class Phi4MMImageEncoder(nn.Module):
             img_embeds, patch_attention_mask=attention_mask
         )
 
-        if self.type_feature == "patch":
-            patch_feature = img_feature
+        patch_feature = img_feature
 
-            use_token_compression = self.image_token_compression is not None
-            use_padding = getattr(self, "img_processor_padding", None) is not None
-            if use_token_compression or use_padding:
-                # reshape to 2D tensor
-                width = int(math.sqrt(patch_feature.size(1)))
-                patch_feature = patch_feature.view(
-                    -1, width, width, patch_feature.size(-1)
-                )
-                # convert to NCHW
-                patch_feature = patch_feature.permute(0, 3, 1, 2)
+        use_token_compression = self.image_token_compression is not None
+        use_padding = getattr(self, "img_processor_padding", None) is not None
+        if use_token_compression or use_padding:
+            # reshape to 2D tensor
+            width = int(math.sqrt(patch_feature.size(1)))
+            patch_feature = patch_feature.view(
+                -1, width, width, patch_feature.size(-1)
+            )
+            # convert to NCHW
+            patch_feature = patch_feature.permute(0, 3, 1, 2)
 
-                if use_padding:
-                    patch_feature = self.img_processor_padding(patch_feature)
-                if use_token_compression:
-                    patch_feature = self.image_token_compression(patch_feature)
+            if use_padding:
+                patch_feature = self.img_processor_padding(patch_feature)
+            if use_token_compression:
+                patch_feature = self.image_token_compression(patch_feature)
 
-                # convert to NHWC
-                patch_feature = patch_feature.permute(0, 2, 3, 1)
-                patch_feature = patch_feature.view(
-                    -1,
-                    patch_feature.size(1) * patch_feature.size(2),
-                    patch_feature.size(-1),
-                )
+            # convert to NHWC
+            patch_feature = patch_feature.permute(0, 2, 3, 1)
+            patch_feature = patch_feature.view(
+                -1,
+                patch_feature.size(1) * patch_feature.size(2),
+                patch_feature.size(-1),
+            )
 
-            return patch_feature
-
-        raise NotImplementedError
+        return patch_feature
 
     def forward(
         self,
@@ -403,6 +399,7 @@ class Phi4MMImageEncoder(nn.Module):
 
         return img_set_tensor
 
+
 class Phi4MMForCausalLM(LlamaForCausalLM):
     packed_modules_mapping = {
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
@@ -411,7 +408,7 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
 
     def __init__(
         self,
-        config: Phi4MultimodalConfig,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
@@ -419,16 +416,32 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
 
         assert get_pp_group().world_size == 1, "pipeline parallel is not supported"
 
-    def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
-        # in qwen-vl, last dim is the same
-        pixel_values = torch.cat([item.pixel_values for item in items], dim=0).type(
-            self.visual.dtype
+        self.vision_encoder = Phi4MMImageEncoder(
+            config,
+            quant_config,
+            prefix="model.vision_embed_tokens",
+            model_dir=config._name_or_path,
         )
-        image_grid_thws = torch.concat([item.image_grid_thws for item in items], dim=0)
-        assert pixel_values.dim() == 2, pixel_values.dim()
-        assert image_grid_thws.dim() == 2, image_grid_thws.dim()
-        image_embeds = self.visual(pixel_values, grid_thw=image_grid_thws)
+
+    def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
+        dtype = next(self.vision_encoder.parameters()).dtype
+        pixel_values = torch.cat([item.pixel_values for item in items], dim=0).type(dtype)
+        image_attention_mask = torch.cat([item.image_emb_mask for item in items], dim=0).type(dtype)
+        image_sizes = torch.cat([item.image_sizes for item in items], dim=0)
+        image_embeds = self.vision_encoder(pixel_values, image_sizes, image_attention_mask)
         return image_embeds
+
+    # def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
+    #     if image_input["type"] == "image_embeds":
+    #         image_embeds = image_input["image_embeds"].type(self.visual.dtype)
+    #     else:
+    #         dtype = next(self.vision_encoder.parameters()).dtype
+    #         pixel_values = ['data'].to(dtype)
+    #         image_sizes = image_input['image_sizes']
+    #         image_attention_mask = image_input['image_attention_mask']
+    #         image_embeds = self.vision_encoder(pixel_values, image_sizes,
+    #                                            image_attention_mask)
+    #     return image_embeds
 
     def forward(
         self,
@@ -447,7 +460,7 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
                 mm_inputs=mm_input,
                 input_ids=input_ids,
                 input_embedding=embed_tokens,
-                #image_data_embedding_func=self.get_image_feature,
+                image_data_embedding_func=self.get_image_feature,
             )
             # once used, mm_inputs is useless, considering chunked-prefill is disabled for multimodal models
             # just being defensive here
@@ -462,6 +475,12 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
             positions=positions,
             **kwargs,
         )
+
+    def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
+        # Get all special token IDs
+        im_token_id: int = mm_inputs.im_token_id
+        pattern = MultiModalityDataPaddingPatternMultimodalTokens([im_token_id])
+        return pattern.pad_input_tokens(input_ids, mm_inputs)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params_dict = dict(self.named_parameters())

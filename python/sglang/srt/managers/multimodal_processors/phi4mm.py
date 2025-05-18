@@ -18,6 +18,8 @@ from sglang.srt.managers.multimodal_processors.base_processor import (
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from sglang.srt.models.phi4mmvllm import Phi4MMForCausalLM
 
+# <|endoftext10|> (see vocab.json in hf model)
+_IMAGE_PLACEHOLDER_TOKEN_ID = 200010
 
 class Phi4MMImageProcessor(BaseMultimodalProcessor):
     models = [Phi4MMForCausalLM]
@@ -29,33 +31,6 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
             audio_token=r'(?:<\|audio_\d+\|>)',
             is_regex=True
         )
-
-    def process_data_task(self, input_text, images=None, audios=None):
-
-        if isinstance(images, list) and len(images) == 0:
-            images = None
-        if isinstance(audios, list) and len(audios) == 0:
-            audios = None
-        processor = self._processor
-        args = {}
-        if isinstance(processor, BaseImageProcessorFast):
-            args["device"] = "cuda"
-        result = self._processor.__call__(
-            text=input_text,
-            images=images,
-            audios=audios,
-            return_tensors="pt",
-            chunk_input=True,
-            **args,
-        )
-        return {
-            "input_ids": result.input_ids,
-            "pixel_values": getattr(result, "pixel_values", None),
-            "tgt_sizes": getattr(result, "tgt_sizes", None),
-            "audio_features": getattr(result, "audio_features", None),
-            "audio_feature_lens": getattr(result, "audio_feature_lens", None),
-            "audio_bounds": getattr(result, "audio_bounds", None),
-        }
 
     async def process_mm_data_async(
         self,
@@ -89,45 +64,16 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
             audios=base_output.audios,
         )
 
-        # Collect special token ids
-        pixel_values = res["pixel_values"]
-        tgt_sizes = res["tgt_sizes"]
-
-        if not isinstance(pixel_values, (torch.Tensor, list)):
-            raise ValueError(
-                "Incorrect type of pixel values. " f"Got type: {type(pixel_values)}"
-            )
-
-        if not isinstance(tgt_sizes, (torch.Tensor, list)):
-            raise ValueError(
-                "Incorrect type of target sizes. " f"Got type: {type(tgt_sizes)}"
-            )
-
-        if len(pixel_values) != len(tgt_sizes):
-            raise ValueError(
-                "Inconsistent batch lengths, found: "
-                f"{len(pixel_values)} vs. {len(tgt_sizes)}"
-            )
-
-        pixel_values_flat: List[torch.Tensor] = []
-        tgt_sizes_flat: List[torch.Tensor] = []
-        for pixel_b, tgt_b in zip(pixel_values, tgt_sizes):
-            # per image
-            if len(pixel_b) != len(tgt_b):
-                raise ValueError(
-                    "Inconsistent N lengths, found: " f"{len(pixel_b)} vs {len(tgt_b)}"
-                )
-            for pixel_n, tgt_n in zip(pixel_b, tgt_b):
-                pixel_values_flat += [pixel_n]
-                tgt_sizes_flat += [tgt_n]
-
-        pixel_values = pixel_values_flat
-
+        pixel_values = torch.split(res["input_image_embeds"], 1)
+        image_sizes = torch.split(res["image_sizes"], 1)
+        image_attention_mask = torch.split(res["image_attention_mask"], 1)
+ 
         items = []
-        if len(pixel_values) != 0:
+        for i in range(len(base_output.images)):
             item = MultimodalDataItem(
-                pixel_values=pixel_values,
-                tgt_size=tgt_sizes_flat,
+                pixel_values=pixel_values[i],
+                image_sizes=image_sizes[i],
+                image_emb_mask = image_attention_mask[i],
                 modality=Modality.IMAGE,
             )
             items += [item]
@@ -135,4 +81,5 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
         return {
             "mm_items": items,
             "input_ids": res["input_ids"].flatten().tolist(),
+            "im_token_id": _IMAGE_PLACEHOLDER_TOKEN_ID,
         }
