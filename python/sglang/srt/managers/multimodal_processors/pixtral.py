@@ -95,6 +95,7 @@ class PixtralProcessor(BaseMultimodalProcessor):
             multimodal_tokens=self.multimodal_tokens,
             max_req_input_len=kwargs.get("max_req_input_len", 4096),
             image_data=image_data,
+            return_text=True,
         )
 
         if mm_data.images:

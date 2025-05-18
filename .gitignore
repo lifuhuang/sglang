@@ -230,3 +230,4 @@ compile_commands.json
 
 # devcontainer
 .devcontainer/devcontainer.json
+.env.leave
