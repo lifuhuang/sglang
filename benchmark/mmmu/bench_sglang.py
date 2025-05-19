@@ -81,22 +81,26 @@ async def process_sample(
     image = sample["image"]
     assert image is not None
     image_path = sample["image_path"]
-    response = await client.chat.completions.create(
-        model="default",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prefix},
-                    {"type": "image_url", "image_url": {"url": image_path}},
-                    {"type": "text", "text": suffix},
-                ],
-            }
-        ],
-        temperature=0,
-        max_completion_tokens=sampling_params["max_new_tokens"],
-        max_tokens=sampling_params["max_new_tokens"],
-    )
+    try: 
+        response = await client.chat.completions.create(
+            model="default",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prefix},
+                        {"type": "image_url", "image_url": {"url": image_path}},
+                        {"type": "text", "text": suffix},
+                    ],
+                }
+            ],
+            temperature=0,
+            max_completion_tokens=sampling_params["max_new_tokens"],
+            max_tokens=sampling_params["max_new_tokens"],
+        )
+    except Exception as e:
+        print(f"Error processing sample {sample['id']}: {e}, prefix: {prefix}, suffix: {suffix}, image_path: {image_path}")
+
     return sample, response.choices[0].message.content
 
 

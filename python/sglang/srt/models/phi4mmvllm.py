@@ -435,7 +435,7 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
         image_embeds = self.vision_encoder(
             pixel_values, image_sizes, image_attention_mask
         )
-        return image_embeds
+        return torch.cat(image_embeds).type(dtype)
 
     # def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
     #     if image_input["type"] == "image_embeds":
@@ -456,8 +456,8 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
         forward_batch: ForwardBatch,
         **kwargs: object,
     ) -> torch.Tensor:
+        embed_tokens = self.model.embed_tokens
         try:
-            embed_tokens = self.model.embed_tokens
             if (
                 not forward_batch.forward_mode.is_decode()
                 and forward_batch.contains_mm_inputs()
@@ -475,17 +475,18 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
 
             else:
                 inputs_embeds = embed_tokens(input_ids)
-
-            return super().forward(
-                input_ids=None,
-                input_embeds=inputs_embeds,
-                forward_batch=forward_batch,
-                positions=positions,
-                **kwargs,
-            )
         except Exception as e:
-            print(f"Error in embedding multimodal inputs: {e}")
-            return torch.zeros_like(embed_tokens)
+            print("Error in embedding multimodal inputs:", e)
+            inputs_embeds = embed_tokens(input_ids)
+
+        return super().forward(
+            input_ids=None,
+            input_embeds=inputs_embeds,
+            forward_batch=forward_batch,
+            positions=positions,
+            **kwargs,
+        )
+
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         # Get all special token IDs
