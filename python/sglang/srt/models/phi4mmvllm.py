@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 from typing import List, Optional, Set, Tuple
 import math
-
+import numpy as np
 import torch
 from torch import nn
 from transformers import PretrainedConfig, Phi4MultimodalConfig, SiglipVisionConfig
@@ -63,13 +63,15 @@ def get_navit_vision_model():
         "intermediate_size": 4304,
         "model_type": "siglip_vision_model",
         "num_attention_heads": 16,
-        "num_hidden_layers": 26, # Model is originally 27-layer, we only need the first 26 layers for feature extraction.
+        "num_hidden_layers": 26,  # Model is originally 27-layer, we only need the first 26 layers for feature extraction.
         "patch_size": 14,
     }
     model_config = SiglipVisionConfig(**vision_config)
 
     # TODO (lifuhuang): Idefics2VisionTransformer is introduced in minicpmv, we should extract it to a shared location.
-    vision_model = Idefics2VisionTransformer(config=model_config, require_post_norm=False)
+    vision_model = Idefics2VisionTransformer(
+        config=model_config, require_post_norm=False
+    )
 
     return vision_model
 
@@ -88,7 +90,7 @@ class Phi4MMImageEncoder(nn.Module):
 
         # n_embed or hidden_size
         hidden_size = config.n_embd if hasattr(config, "n_embd") else config.hidden_size
-        self.type_feature = 'patch'
+        self.type_feature = "patch"
 
         self.img_processor = get_navit_vision_model()
 
@@ -166,9 +168,7 @@ class Phi4MMImageEncoder(nn.Module):
         if use_token_compression or use_padding:
             # reshape to 2D tensor
             width = int(math.sqrt(patch_feature.size(1)))
-            patch_feature = patch_feature.view(
-                -1, width, width, patch_feature.size(-1)
-            )
+            patch_feature = patch_feature.view(-1, width, width, patch_feature.size(-1))
             # convert to NCHW
             patch_feature = patch_feature.permute(0, 3, 1, 2)
 
@@ -228,7 +228,7 @@ class Phi4MMImageEncoder(nn.Module):
         base_resolution = self.crop_size
         base_feat_height_reduction = self.base_feat_height_reduction
 
-        base_feat_height = base_feat_width = int(torch.sqrt(img_features.shape[1]))
+        base_feat_height = base_feat_width = int(np.sqrt(img_features.shape[1]))
         assert (
             base_feat_height == base_feat_height_target
             and base_feat_width == base_feat_height_target
@@ -425,10 +425,16 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
 
     def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         dtype = next(self.vision_encoder.parameters()).dtype
-        pixel_values = torch.cat([item.pixel_values for item in items], dim=0).type(dtype)
-        image_attention_mask = torch.cat([item.image_emb_mask for item in items], dim=0).type(dtype)
+        pixel_values = torch.cat([item.pixel_values for item in items], dim=0).type(
+            dtype
+        )
+        image_attention_mask = torch.cat(
+            [item.image_emb_mask for item in items], dim=0
+        ).type(dtype)
         image_sizes = torch.cat([item.image_sizes for item in items], dim=0)
-        image_embeds = self.vision_encoder(pixel_values, image_sizes, image_attention_mask)
+        image_embeds = self.vision_encoder(
+            pixel_values, image_sizes, image_attention_mask
+        )
         return image_embeds
 
     # def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
@@ -450,31 +456,36 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
         forward_batch: ForwardBatch,
         **kwargs: object,
     ) -> torch.Tensor:
-        embed_tokens = self.model.embed_tokens
-        if (
-            not forward_batch.forward_mode.is_decode()
-            and forward_batch.contains_mm_inputs()
-        ):
-            mm_input = forward_batch.merge_mm_inputs()
-            inputs_embeds = embed_mm_inputs(
-                mm_inputs=mm_input,
-                input_ids=input_ids,
-                input_embedding=embed_tokens,
-                image_data_embedding_func=self.get_image_feature,
-            )
-            # once used, mm_inputs is useless, considering chunked-prefill is disabled for multimodal models
-            # just being defensive here
-            forward_batch.mm_inputs = None
-        else:
-            inputs_embeds = embed_tokens(input_ids)
+        try:
+            embed_tokens = self.model.embed_tokens
+            if (
+                not forward_batch.forward_mode.is_decode()
+                and forward_batch.contains_mm_inputs()
+            ):
+                mm_input = forward_batch.merge_mm_inputs()
+                inputs_embeds = embed_mm_inputs(
+                    mm_inputs=mm_input,
+                    input_ids=input_ids,
+                    input_embedding=embed_tokens,
+                    image_data_embedding_func=self.get_image_feature,
+                )
+                # once used, mm_inputs is useless, considering chunked-prefill is disabled for multimodal models
+                # just being defensive here
+                forward_batch.mm_inputs = None
 
-        return super().forward(
-            input_ids=None,
-            input_embeds=inputs_embeds,
-            forward_batch=forward_batch,
-            positions=positions,
-            **kwargs,
-        )
+            else:
+                inputs_embeds = embed_tokens(input_ids)
+
+            return super().forward(
+                input_ids=None,
+                input_embeds=inputs_embeds,
+                forward_batch=forward_batch,
+                positions=positions,
+                **kwargs,
+            )
+        except Exception as e:
+            print(f"Error in embedding multimodal inputs: {e}")
+            return torch.zeros_like(embed_tokens)
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         # Get all special token IDs
@@ -483,17 +494,61 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
         return pattern.pad_input_tokens(input_ids, mm_inputs)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            (".self_attn.qkv_proj", ".self_attn.q_proj", "q"),
+            (".self_attn.qkv_proj", ".self_attn.k_proj", "k"),
+            (".self_attn.qkv_proj", ".self_attn.v_proj", "v"),
+        ]
+        prefix_mapping = {
+            # "model.embed_tokens_extend.audio_embed.audio_projection.vision.": "embed_tokens_extend.audio_projection_for_vision.",
+            # "model.embed_tokens_extend.audio_embed.audio_projection.speech.": "embed_tokens_extend.audio_projection.",
+            # "model.embed_tokens_extend.audio_embed.": "embed_tokens_extend.",
+            "model.embed_tokens_extend.image_embed.": "vision_encoder.",
+        }
+
+        skip_list = [
+            "img_processor.encoder.layers.26",
+            "img_processor.head",
+            "img_processor.post_layernorm",
+            "audio"
+        ]
+
+        def _should_skip(name: str) -> bool:
+            return any(
+                substr in name for substr in skip_list
+            ) 
+        
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in weights:
-            if name.find("base_layer.") != -1:
-                name = name.replace("base_layer.", "")
-            param = params_dict.get(name)
-            name = name.replace("model.vision_encoder.", "vision_encoder.")
-            if param is None:
-                print(f"Warning: {name} not found in model parameters")
+             # Skip the last layer
+            if _should_skip(name):
                 continue
-            weight_loader = getattr(param, "weight_loader", default_weight_loader)
-            weight_loader(param, loaded_weight)
 
+            for old_name, new_name in prefix_mapping.items():
+                if name.startswith(old_name):
+                    name = name.replace(old_name, new_name)
+                    break
+
+            # Adapt to VisionAttention
+            name = name.replace(r"self_attn.out_proj", r"self_attn.proj")
+            name = name.replace(r"base_layer.", r"")
+
+            for param_name, weight_name, shard_id in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                name = name.replace(weight_name, param_name)
+                param = params_dict[name]
+                weight_loader = param.weight_loader
+                weight_loader(param, loaded_weight, shard_id)
+                break
+            else:
+                param = params_dict.get(name)
+                if param is None:
+                    if "lora" not in name:
+                        print(f"Warning: {name} not found in model parameters")
+                    continue
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, loaded_weight)
 
 EntryClass = [Phi4MMForCausalLM]

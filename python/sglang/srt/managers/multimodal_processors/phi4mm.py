@@ -1,10 +1,16 @@
 from typing import List, Optional, Union, Mapping
 import math
 import torch
+import re
 from transformers import BaseImageProcessorFast
 from transformers.image_utils import SizeDict
-from transformers import (BatchFeature, PretrainedConfig, ProcessorMixin,
-                          SequenceFeatureExtractor, SiglipVisionConfig)
+from transformers import (
+    BatchFeature,
+    PretrainedConfig,
+    ProcessorMixin,
+    SequenceFeatureExtractor,
+    SiglipVisionConfig,
+)
 
 
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
@@ -18,8 +24,11 @@ from sglang.srt.managers.multimodal_processors.base_processor import (
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from sglang.srt.models.phi4mmvllm import Phi4MMForCausalLM
 
-# <|endoftext10|> (see vocab.json in hf model)
-_IMAGE_PLACEHOLDER_TOKEN_ID = 200010
+_IMAGE_SPECIAL_TOKEN = "<|endoftext10|>"
+_AUDIO_SPECIAL_TOKEN = "<|endoftext11|>"
+_IMAGE_SPECIAL_TOKEN_ID = 200010
+_AUDIO_SPECIAL_TOKEN_ID = 200011
+
 
 class Phi4MMImageProcessor(BaseMultimodalProcessor):
     models = [Phi4MMForCausalLM]
@@ -27,9 +36,7 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
     def __init__(self, hf_config, server_args, _processor):
         super().__init__(hf_config, server_args, _processor)
         self.multimodal_tokens = MultimodalSpecialTokens(
-            image_token=r'(?:<\|image_\d+\|>)',
-            audio_token=r'(?:<\|audio_\d+\|>)',
-            is_regex=True
+            image_token=_IMAGE_SPECIAL_TOKEN,
         )
 
     async def process_mm_data_async(
@@ -53,7 +60,7 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
             max_req_input_len=max_req_input_len,
             audio_data=audio_data,
             image_data=image_data,
-            multimodal_tokens=self.multimodal_tokens
+            multimodal_tokens=self.multimodal_tokens,
         )
         if base_output is None:
             return None
@@ -67,13 +74,13 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
         pixel_values = torch.split(res["input_image_embeds"], 1)
         image_sizes = torch.split(res["image_sizes"], 1)
         image_attention_mask = torch.split(res["image_attention_mask"], 1)
- 
+
         items = []
         for i in range(len(base_output.images)):
             item = MultimodalDataItem(
                 pixel_values=pixel_values[i],
                 image_sizes=image_sizes[i],
-                image_emb_mask = image_attention_mask[i],
+                image_emb_mask=image_attention_mask[i],
                 modality=Modality.IMAGE,
             )
             items += [item]
@@ -81,5 +88,5 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
         return {
             "mm_items": items,
             "input_ids": res["input_ids"].flatten().tolist(),
-            "im_token_id": _IMAGE_PLACEHOLDER_TOKEN_ID,
+            "im_token_id": _IMAGE_SPECIAL_TOKEN_ID,
         }

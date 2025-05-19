@@ -18,7 +18,6 @@
 import dataclasses
 import re
 from enum import IntEnum, auto
-from string import Template
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from sglang.srt.openai_api.protocol import ChatCompletionRequest
@@ -76,7 +75,7 @@ class Conversation:
     # Stop criteria (the default one is EOS token)
     stop_str: Union[str, List[str]] = None
     # The string that represents an image token in the prompt
-    image_token: str  = "<image>"
+    image_token: str = "<image>"
     audio_token: str = "<audio>"
 
     image_data: Optional[List[str]] = None
@@ -426,9 +425,9 @@ matching_function_registry: List[Callable] = []
 def register_conv_template(template: Conversation, override: bool = False):
     """Register a new conversation template."""
     if not override:
-        assert (
-            template.name not in chat_templates
-        ), f"{template.name} has been registered."
+        assert template.name not in chat_templates, (
+            f"{template.name} has been registered."
+        )
 
     chat_templates[template.name] = template
 
@@ -577,7 +576,6 @@ def generate_chat_conv(
                 if add_token_as_needed:
                     image_token = ""
 
-                image_count = 0
                 audio_token = conv.audio_token
                 for content in message.content:
                     if content.type == "text":
@@ -588,9 +586,6 @@ def generate_chat_conv(
                         # NOTE: works for llava and intervl2_5
                         if conv.name == "internvl-2-5":
                             real_content = image_token + real_content
-                        elif conv.name == "phi-4-mm":
-                            image_count += 1
-                            real_content += image_token.format(index=image_count)
                         else:
                             real_content += image_token
                         conv.append_image(content.image_url.url)
@@ -676,9 +671,11 @@ register_conv_template(
         sep_style=SeparatorStyle.NO_COLON_SINGLE,
         sep="<|end|>",
         stop_str="<|end|>",
-        image_token="<|image_{index}|>",
-        audio_token="<|audio_{index}|>",
-    ))
+        image_token="<|endoftext10|>",
+        # image_token="<|image_{index}|>",
+        # audio_token="<|audio_{index}|>",
+    )
+)
 
 register_conv_template(
     Conversation(
@@ -965,9 +962,8 @@ def match_moonshot_kimivl(model_path: str):
     if re.search(r"kimi.*vl", model_path, re.IGNORECASE):
         return "kimi-vl"
 
+
 @register_conv_template_matching_function
 def match_phi_4_mm(model_path: str):
-    if (
-        "phi-4-multimodal" in model_path.lower()
-    ):
+    if "phi-4-multimodal" in model_path.lower():
         return "phi-4-mm"
