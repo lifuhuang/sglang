@@ -428,9 +428,10 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
         pixel_values = torch.cat([item.pixel_values for item in items], dim=0).type(
             dtype
         )
+        # TODO: move to gpu
         image_attention_mask = torch.cat(
             [item.image_emb_mask for item in items], dim=0
-        ).type(dtype)
+        )
         image_sizes = torch.cat([item.image_sizes for item in items], dim=0)
         image_embeds = self.vision_encoder(
             pixel_values, image_sizes, image_attention_mask
