@@ -437,18 +437,6 @@ class Phi4MMForCausalLM(LlamaForCausalLM):
         )
         return torch.cat(image_embeds).type(dtype)
 
-    # def get_image_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
-    #     if image_input["type"] == "image_embeds":
-    #         image_embeds = image_input["image_embeds"].type(self.visual.dtype)
-    #     else:
-    #         dtype = next(self.vision_encoder.parameters()).dtype
-    #         pixel_values = ['data'].to(dtype)
-    #         image_sizes = image_input['image_sizes']
-    #         image_attention_mask = image_input['image_attention_mask']
-    #         image_embeds = self.vision_encoder(pixel_values, image_sizes,
-    #                                            image_attention_mask)
-    #     return image_embeds
-
     def forward(
         self,
         input_ids: torch.Tensor,
