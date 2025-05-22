@@ -1,14 +1,11 @@
 from collections.abc import Iterable
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Tuple
 import math
 import numpy as np
 import torch
 from torch import nn
-from transformers import PretrainedConfig, Phi4MultimodalConfig, SiglipVisionConfig
-from transformers.models.llama4.modeling_llama4 import Llama4MultiModalProjector
+from transformers import PretrainedConfig, SiglipVisionConfig
 
-from sglang.srt.layers.logits_processor import LogitsProcessor
-from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
 from sglang.srt.layers.quantization import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
@@ -19,17 +16,15 @@ from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInp
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.utils import add_prefix
-from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.distributed import get_pp_group
 from sglang.srt.models.minicpmv import Idefics2VisionTransformer
-from sglang.srt.models.llama import LlamaModel, LlamaForCausalLM
+from sglang.srt.models.llama import LlamaForCausalLM
 
 # <|endoftext10|> (see vocab.json in hf model)
 _IMAGE_PLACEHOLDER_TOKEN_ID = 200010
 # <|endoftext11|>
-_AUDIO_PLACEHOLDER_TOKEN_ID = 200011
-
-_AUDIO_MAX_SOUNDFILE_SIZE = 241_000
+# _AUDIO_PLACEHOLDER_TOKEN_ID = 200011
+# _AUDIO_MAX_SOUNDFILE_SIZE = 241_000
 
 SIGLIP_NAME = "siglip-so400m-patch14-448"
 VISION_ENCODER_TO_PROCESSING_CONFIG = {
@@ -39,22 +34,6 @@ VISION_ENCODER_TO_PROCESSING_CONFIG = {
         "token_compression_factor": 2,
     },
 }
-
-
-def _get_padding_size(
-    orig_width: int, orig_height: int, target_height: int, target_width: int
-):
-    ratio_width = target_width / orig_width
-    ratio_height = target_height / orig_height
-
-    if ratio_width < ratio_height:
-        padding_width = 0
-        padding_height = target_height - int(orig_height * ratio_width)
-    else:
-        padding_width = target_width - int(orig_width * ratio_height)
-        padding_height = 0
-    return padding_height, padding_width
-
 
 def get_navit_vision_model():
     vision_config = {
