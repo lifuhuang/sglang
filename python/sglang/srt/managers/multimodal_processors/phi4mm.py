@@ -1,21 +1,19 @@
-from typing import List, Optional, Union, Mapping
-import math
+from typing import List, Optional, Union, Enum
 import torch
-import re
-from transformers import BaseImageProcessorFast
-from transformers.image_utils import SizeDict
+import types
 from transformers import (
     BatchFeature,
-    PretrainedConfig,
-    ProcessorMixin,
-    SequenceFeatureExtractor,
-    SiglipVisionConfig,
 )
+
+from transformers.image_processing_utils import BatchFeature
+from transformers.image_utils import (
+    ImageInput,
+)
+from transformers.tokenization_utils_base import PaddingStrategy, TextInput, TruncationStrategy
+from transformers.utils import TensorType
 
 
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
-from sglang.srt.models.mllama import MllamaForConditionalGeneration
-from sglang.srt.utils import load_image
 
 from sglang.srt.managers.multimodal_processors.base_processor import (
     BaseMultimodalProcessor,
@@ -25,15 +23,66 @@ from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from sglang.srt.models.phi4mmvllm import Phi4MMForCausalLM
 
 _IMAGE_SPECIAL_TOKEN = "<|endoftext10|>"
-_AUDIO_SPECIAL_TOKEN = "<|endoftext11|>"
 _IMAGE_SPECIAL_TOKEN_ID = 200010
-_AUDIO_SPECIAL_TOKEN_ID = 200011
+# _AUDIO_SPECIAL_TOKEN = "<|endoftext11|>"
+# _AUDIO_SPECIAL_TOKEN_ID = 200011
+
+class InputMode(Enum):
+    LANGUAGE = 0
+    VISION = 1
+    SPEECH = 2
+    VISION_SPEECH = 3
+
+
+# TODO (lifuhuang): the native Phi4MMProcessor provided by Microsoft does not export num_img_tokens, 
+# which is needed for handling multiple images. I applied a patch to the original processor to export 
+# this needed value. vLLM handles this by re-calculate # tokens at inferencing time, which does not 
+# appear to be efficient, but I haven't got a chance to benchmark. In the future, we should consider 
+# to add this patch to the original processor to avoid the hack.
+def call_wrapper(
+    self,
+    text: Union[TextInput, List[TextInput]],
+    images: Optional[ImageInput] = None,
+    audios: Optional[List] = None,
+    padding: Union[bool, str, PaddingStrategy] = False,
+    truncation: Optional[Union[bool, str, TruncationStrategy]] = None,
+    max_length=None,
+    return_tensors: Optional[Union[str, TensorType]] = TensorType.PYTORCH,
+) -> BatchFeature:
+    
+    image_inputs = self.image_processor(images, return_tensors=return_tensors) if images is not None else {}
+    audio_inputs = self.audio_processor(audios, return_tensors=return_tensors) if audios is not None else {}
+    inputs = self._convert_images_audios_text_to_inputs(
+        image_inputs,
+        audio_inputs,
+        text,
+        padding=padding,
+        truncation=truncation,
+        max_length=max_length,
+        return_tensors=return_tensors,
+    )
+
+    # idenfity the input mode
+    if len(image_inputs) > 0 and len(audio_inputs) > 0:
+        input_mode = InputMode.VISION_SPEECH
+    elif len(image_inputs) > 0:
+        input_mode = InputMode.VISION
+    elif len(audio_inputs) > 0:
+        input_mode = InputMode.SPEECH
+    else:
+        input_mode = InputMode.LANGUAGE
+    inputs["input_mode"] = torch.tensor([input_mode.value], dtype=torch.long)
+    inputs["num_img_tokens"] = image_inputs.get("num_img_tokens", None)
+
+    return inputs
 
 
 class Phi4MMImageProcessor(BaseMultimodalProcessor):
     models = [Phi4MMForCausalLM]
 
     def __init__(self, hf_config, server_args, _processor):
+        # TODO (lifuhuang): hack to export num_img_tokens info
+        _processor.__call__ = types.MethodType(call_wrapper, _processor)
         super().__init__(hf_config, server_args, _processor)
         self.multimodal_tokens = MultimodalSpecialTokens(
             image_token=_IMAGE_SPECIAL_TOKEN,
@@ -90,3 +139,4 @@ class Phi4MMImageProcessor(BaseMultimodalProcessor):
             "input_ids": res["input_ids"].flatten().tolist(),
             "im_token_id": _IMAGE_SPECIAL_TOKEN_ID,
         }
+
