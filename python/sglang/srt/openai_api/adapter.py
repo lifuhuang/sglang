@@ -1204,6 +1204,7 @@ def v1_chat_generate_request(
             else:
                 prompt_kwargs = {"input_ids": input_ids}
 
+    lora_paths = "vision"
     adapted_request = GenerateReqInput(
         **prompt_kwargs,
         image_data=image_data_list,
